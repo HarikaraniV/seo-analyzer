@@ -1,80 +1,55 @@
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-import joblib
-import lightgbm as lgb
-from urllib.parse import urlparse
+from seo_utils import analyze_website, load_model, predict_seo_score, get_pagespeed_score
 
-# 🔐 Your Google PageSpeed API Key (replace with actual key)
-API_KEY = "AIzaSyBykafQYZR8ReIY9LXFYAWGiYVGSt9RJrU"
+# Load model
+try:
+    model = load_model()
+except FileNotFoundError as e:
+    st.error(str(e))
+    st.stop()
 
-# 📦 Load pre-trained LightGBM model
-model = joblib.load("model/seo_model.pkl")
+st.set_page_config(page_title="SEO Analyzer", layout="centered")
+st.title("🔍 SEO Analyzer Tool")
 
-# 🔍 Function to fetch meta details using BeautifulSoup
-def extract_meta_details(url):
-    try:
-        response = requests.get(url, timeout=10)
-        soup = BeautifulSoup(response.text, "html.parser")
+# Inputs
+url = st.text_input("Enter website URL (include http:// or https://):")
+keyword_input = st.text_input("Enter a keyword to check its density (optional):")
 
-        title = soup.title.string if soup.title else ""
-        meta_desc = ""
-        for meta in soup.find_all("meta"):
-            if "name" in meta.attrs and meta.attrs["name"].lower() == "description":
-                meta_desc = meta.attrs.get("content", "")
-                break
+if url:
+    with st.spinner("Analyzing website..."):
+        meta_data, keywords, global_trends, overlap = analyze_website(url, keyword_input)
+        pagespeed_score = get_pagespeed_score(url)
 
-        images = soup.find_all("img")
-        img_with_alt = [img for img in images if img.get("alt")]
-        alt_tag_percent = (len(img_with_alt) / len(images)) * 100 if images else 0
+    if meta_data:
+        st.subheader("📊 Meta Information")
+        st.json(meta_data)
 
-        word_count = len(soup.get_text().split())
-        keyword_density = 1.5  # Placeholder or derived from analysis
+        st.subheader("🔑 Extracted Keywords")
+        st.write(", ".join(keywords) if keywords else "No keywords found.")
 
-        return {
-            "Word_Count": word_count,
-            "Keyword_Density": keyword_density,
-            "Meta_Title_Length": len(title),
-            "Meta_Desc_Length": len(meta_desc),
-            "Alt_Tag_Percent": round(alt_tag_percent, 2),
-        }
-    except Exception as e:
-        st.error(f"❌ Failed to extract meta details: {e}")
-        return None
+        st.subheader("🌍 Global Trending Keywords")
+        st.write(", ".join(global_trends) if global_trends else "No trending keywords found from Bing News.")
 
-# 📊 Function to fetch PageSpeed score
-def fetch_pagespeed_score(url):
-    api_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={url}&key={API_KEY}"
-    try:
-        response = requests.get(api_url)
-        data = response.json()
-        score = data['lighthouseResult']['categories']['performance']['score'] * 100
-        return round(score, 2)
-    except Exception as e:
-        st.warning(f"⚠️ Could not fetch PageSpeed score: {e}")
-        return None
+        st.subheader("🔍 Overlapping Keywords with Global Trends")
+        st.write(", ".join(overlap) if overlap else "No overlap with global trends.")
 
-# 🌐 Streamlit Web App
-st.title("🔍 SEO Website Analyzer")
-url_input = st.text_input("Enter Website URL (with https://)", placeholder="https://example.com")
+        st.subheader("⚡ PageSpeed Insights Score")
+        if pagespeed_score is not None:
+            st.metric("Performance Score", f"{pagespeed_score}/100")
+        else:
+            st.warning("Unable to fetch PageSpeed score. Add API key in environment.")
 
-if st.button("Analyze"):
-    if url_input:
-        st.info("⏳ Fetching SEO data...")
-        meta_data = extract_meta_details(url_input)
-        if meta_data:
-            st.success("✅ Meta details fetched successfully!")
-            st.write(meta_data)
+        if keyword_input:
+            st.subheader(f"🔑 Relevance for '{keyword_input}'")
+            relevance_text = "✅ Keyword is relevant to this page." if meta_data.get("Keyword_Relevant") else "❌ Keyword is NOT relevant or rarely found."
+            st.write(relevance_text)
 
-            score = fetch_pagespeed_score(url_input)
-            if score is not None:
-                st.write(f"🚀 Google PageSpeed Score: **{score}/100**")
 
-            # Predict SEO score
-            df = pd.DataFrame([meta_data])
-            predicted_score = model.predict(df)[0]
-            st.subheader(f"🔢 Predicted SEO Score: {round(predicted_score, 2)} / 100")
-
+        st.subheader("📈 Predicted SEO Score")
+        try:
+            seo_score = predict_seo_score(model, meta_data)
+            st.success(f"{round(seo_score, 2)} / 100")
+        except Exception as e:
+            st.error(f"Error predicting SEO score: {e}")
     else:
-        st.warning("Please enter a valid URL.")
+        st.error("Failed to extract metadata from the provided URL.")
