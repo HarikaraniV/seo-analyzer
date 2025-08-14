@@ -98,7 +98,7 @@ def compare_with_my_keywords(my_keywords, global_trends):
 # PageSpeed (optional)
 # ------------------------
 def get_pagespeed_score(url):
-    API_KEY = os.getenv("PAGESPEED_API_KEY")  # Google PageSpeed Insights API key
+    API_KEY = "AIzaSyBykafQYZR8ReIY9LXFYAWGiYVGSt9RJrU"  # Google PageSpeed Insights API key
     if not API_KEY:
         return None
     try:

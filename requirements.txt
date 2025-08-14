@@ -11,3 +11,4 @@ joblib
 Pillow
 torch
 transformers
+tldextract
