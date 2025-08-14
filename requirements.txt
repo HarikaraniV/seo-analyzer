@@ -8,3 +8,6 @@ numpy
 scikit-learn
 lightgbm
 joblib
+Pillow
+torch
+transformers

@@ -1,20 +1,14 @@
-import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-from collections import Counter
-import re
-import joblib
 import os
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import sys
-import logging
-
-logging.basicConfig(level=logging.DEBUG, format='%(message)s')
-logger = logging.getLogger()
+import re
+import tldextract
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+from collections import Counter
+import joblib
 
 # ------------------------
-# Keyword extraction (unchanged)
+# Keyword extraction
 # ------------------------
 def extract_keywords(text, max_keywords=10):
     stopwords = set([
@@ -27,78 +21,53 @@ def extract_keywords(text, max_keywords=10):
         'only','each','both','any','some','few','many','every','its','like','other',
         'out','off','again','new','old','via','according','report','reports','online','based'
     ])
-    words = re.findall(r'\b[a-z]{3,}\b', text.lower())
+    words = re.findall(r'\b[a-z]{3,}\b', (text or "").lower())
     filtered = [w for w in words if w not in stopwords]
     common = Counter(filtered).most_common(max_keywords)
     return [word for word, _ in common]
 
 # ------------------------
-# TF-IDF Cosine Similarity for keyword relevance
-# ------------------------
-def check_keyword_relevance_tfidf(page_text, keyword):
-    documents = [page_text, keyword.lower()]
-    vectorizer = TfidfVectorizer(stop_words='english')
-    tfidf_matrix = vectorizer.fit_transform(documents)
-    sim_score = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
-    return sim_score
-
-# ------------------------
-# Meta extraction with relevance check
+# Meta extraction
 # ------------------------
 def extract_meta_details(url, keyword_input=None):
     try:
-        response = requests.get(url, timeout=10)
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; SEO-Analyzer/1.0)"}
+        response = requests.get(url, timeout=20, headers=headers)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
-        title = soup.title.string if soup.title else ""
+        title = soup.title.string.strip() if soup.title and soup.title.string else ""
         meta_desc = ""
         for meta in soup.find_all("meta"):
             if meta.get("name", "").lower() == "description":
-                meta_desc = meta.get("content", "")
+                meta_desc = (meta.get("content") or "").strip()
                 break
 
         images = soup.find_all("img")
-        alt_tag_percent = (len([img for img in images if img.get("alt")]) / len(images) * 100) if images else 0
+        img_with_alt = [img for img in images if img.get("alt")]
+        alt_tag_percent = (len(img_with_alt) / len(images) * 100) if images else 0
 
-        page_text = soup.get_text(separator=" ").lower()
+        page_text = soup.get_text(separator=" ")
         word_count = len(re.findall(r'\b\w+\b', page_text))
         keywords = extract_keywords(page_text, max_keywords=10)
 
-        # Calculate keyword density
-        keyword_density = 0
-        if keyword_input:
-            keyword_occurrences = len(re.findall(rf"\b{re.escape(keyword_input.lower())}\b", page_text))
-            keyword_density = (keyword_occurrences / word_count * 100) if word_count > 0 else 0
-        else:
-            if keywords:
-                top_kw = keywords[0]
-                keyword_occurrences = len(re.findall(rf"\b{top_kw}\b", page_text))
-                keyword_density = (keyword_occurrences / word_count * 100) if word_count > 0 else 0
-
-        # Check keyword relevance using TF-IDF cosine similarity
-        keyword_relevant = False
-        if keyword_input:
-            keyword_lower = keyword_input.lower()
-            if keyword_lower not in page_text:
-                keyword_relevant = False
-            else:
-                sim_score = check_keyword_relevance_tfidf(page_text, keyword_input)
-                logger.debug(f"Cosine similarity for '{keyword_input}' = {sim_score}")
-
-
-                threshold = 0.001
-                keyword_relevant = sim_score > threshold
-            keyword_relevant = bool(keyword_relevant)
-        else:
-            keyword_relevant = False
+        keyword_density = 0.0
+        if word_count > 0:
+            chosen_kw = None
+            if keyword_input:
+                chosen_kw = keyword_input.strip().lower()
+            elif keywords:
+                chosen_kw = keywords[0]
+            if chosen_kw:
+                occurrences = len(re.findall(rf"\b{re.escape(chosen_kw)}\b", page_text.lower()))
+                keyword_density = (occurrences / word_count * 100)
 
         return {
-            "Word_Count": word_count,
-            "Keyword_Density": round(keyword_density, 2),
-            "Keyword_Relevant": keyword_relevant,
-            "Meta_Title_Length": len(title),
-            "Meta_Desc_Length": len(meta_desc),
-            "Alt_Tag_Percent": round(alt_tag_percent, 2),
+            "Word_Count": int(word_count),
+            "Keyword_Density": round(float(keyword_density), 2),
+            "Meta_Title_Length": int(len(title or "")),
+            "Meta_Desc_Length": int(len(meta_desc or "")),
+            "Alt_Tag_Percent": round(float(alt_tag_percent), 2),
         }, keywords
 
     except Exception as e:
@@ -106,13 +75,13 @@ def extract_meta_details(url, keyword_input=None):
         return None, []
 
 # ------------------------
-# Bing News Trends (unchanged)
+# Global trending keywords (simple, keyless via RSS)
 # ------------------------
 def get_global_trending_keywords():
     trending_keywords = []
     try:
         rss_url = "https://www.bing.com/news/search?q=top+trending&format=rss"
-        resp = requests.get(rss_url)
+        resp = requests.get(rss_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "xml")
             titles = soup.find_all("title")
@@ -122,31 +91,61 @@ def get_global_trending_keywords():
         print(f"⚠️ Failed to fetch Bing trends: {e}")
     return trending_keywords
 
-# ------------------------
-# Compare user site keywords with global trends (unchanged)
-# ------------------------
 def compare_with_my_keywords(my_keywords, global_trends):
-    return list(set(my_keywords) & set(global_trends))
+    return list(set(my_keywords or []) & set(global_trends or []))
 
 # ------------------------
-# PageSpeed Insights (unchanged)
+# PageSpeed (optional)
 # ------------------------
 def get_pagespeed_score(url):
-    API_KEY = "AIzaSyBykafQYZR8ReIY9LXFYAWGiYVGSt9RJrU"
+    API_KEY = os.getenv("PAGESPEED_API_KEY")  # Google PageSpeed Insights API key
     if not API_KEY:
         return None
     try:
         api_url = f"https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url={url}&key={API_KEY}"
-        response = requests.get(api_url)
+        response = requests.get(api_url, timeout=30)
+        response.raise_for_status()
         data = response.json()
         score = data['lighthouseResult']['categories']['performance']['score'] * 100
-        return round(score, 2)
+        return round(float(score), 2)
     except Exception as e:
         print(f"⚠️ PageSpeed error: {e}")
         return None
 
 # ------------------------
-# Analyze full website (unchanged)
+# Domain rank (optional)
+# Tries Similarweb (official API) if SIMILARWEB_API_KEY is set.
+# Returns a small dict or None.
+# ------------------------
+def get_domain_rank(url):
+    key = os.getenv("SIMILARWEB_API_KEY")
+    if not key:
+        return None
+    try:
+        # Extract domain
+        ext = tldextract.extract(url)
+        domain = ".".join(part for part in [ext.domain, ext.suffix] if part)
+
+        # Example endpoint (adjust per your Similarweb subscription)
+        # Here we attempt traffic & rank overview
+        sw_url = f"https://api.similarweb.com/v1/website/{domain}/global-rank/global-rank"
+        resp = requests.get(sw_url, params={"api_key": key}, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            # Data shape depends on plan; attempt a compact read
+            # Fallback to raw JSON if structure unknown
+            if isinstance(data, dict) and "GlobalRank" in data:
+                return {"domain": domain, "global_rank": data.get("GlobalRank")}
+            return {"domain": domain, "raw": data}
+        else:
+            print(f"Similarweb API error {resp.status_code}: {resp.text}")
+            return None
+    except Exception as e:
+        print(f"⚠️ Domain rank error: {e}")
+        return None
+
+# ------------------------
+# Analyze website (master)
 # ------------------------
 def analyze_website(url, keyword_input=None):
     meta_data, keywords = extract_meta_details(url, keyword_input=keyword_input)
@@ -155,19 +154,19 @@ def analyze_website(url, keyword_input=None):
     return meta_data, keywords, global_trends, overlap
 
 # ------------------------
-# Predict SEO score (unchanged)
+# Model: load & predict
 # ------------------------
-def predict_seo_score(model, meta_data):
-    # list only the features your model was trained on:
-    feature_keys = ['Word_Count', 'Keyword_Density', 'Meta_Title_Length', 'Meta_Desc_Length', 'Alt_Tag_Percent']
-    filtered_data = {k: meta_data[k] for k in feature_keys}
-    df = pd.DataFrame([filtered_data])
-    return model.predict(df)[0]
-
-
 def load_model():
     model_path = os.path.join("model", "seo_model.pkl")
     if os.path.exists(model_path):
         return joblib.load(model_path)
     else:
         raise FileNotFoundError(f"Model file not found at {model_path}")
+
+def predict_seo_score(model, meta_data):
+    if not meta_data:
+        raise ValueError("meta_data is None; cannot predict.")
+    feature_keys = ['Word_Count', 'Keyword_Density', 'Meta_Title_Length', 'Meta_Desc_Length', 'Alt_Tag_Percent']
+    filtered_data = {k: meta_data.get(k, 0) for k in feature_keys}
+    df = pd.DataFrame([filtered_data])
+    return model.predict(df)[0]
